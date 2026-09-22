@@ -1,13 +1,12 @@
 import sys
 from pathlib import Path
+from typing import List, Union
+import joblib
 import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.svm import LinearSVC
-from sklearn.linear_model import LogisticRegression
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,116 +15,89 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.load_data import load_config, load_processed_data
 from src.data.clean_text import clean_single_text
-from src.models.predict import save_pipeline, load_pipeline, save_encoder, load_encoder
+from src.features.build_features import build_tfidf_vectorizer
+from src.models.predict import train_priority_classifier, save_encoder, load_encoder
 
 
 class TicketClassificationPipeline:
-    """End-to-end inference pipeline for raw ticket text classification."""
+    """End-to-end inference pipeline for raw support ticket text."""
 
-    def __init__(self, pipeline=None, encoder=None, config=None):
+    def __init__(self, pipeline: Pipeline = None, encoder: LabelEncoder = None, config: dict = None):
         self.config = config or load_config()
         self.pipeline = pipeline
         self.encoder = encoder
 
-    def load(self):
+    @classmethod
+    def load(cls, config: dict = None) -> "TicketClassificationPipeline":
         """Load trained pipeline and encoder artifacts from disk."""
-        self.pipeline = load_pipeline()
-        self.encoder = load_encoder()
-        return self
+        if config is None:
+            config = load_config()
 
-    def predict(self, texts):
-        """Predict category label for raw ticket text(s)."""
-        if self.pipeline is None or self.encoder is None:
-            self.load()
+        pipe_path = PROJECT_ROOT / config.get("models", {}).get("artifacts", {}).get(
+            "pipeline_save_path", "models/ticket_pipeline.pkl"
+        )
+        encoder_path = PROJECT_ROOT / config.get("models", {}).get("artifacts", {}).get(
+            "encoder_save_path", "models/topic_encoder.pkl"
+        )
 
+        pipeline = joblib.load(pipe_path)
+        encoder = joblib.load(encoder_path)
+        return cls(pipeline=pipeline, encoder=encoder, config=config)
+
+    def predict(self, texts: Union[str, List[str]]) -> List[str]:
+        """Accept raw strings and return predicted category labels."""
         if isinstance(texts, str):
             texts = [texts]
 
-        # Clean raw text inputs before passing to vectorizer
-        cleaned_texts = [clean_single_text(t) for t in texts]
-        encoded_preds = self.pipeline.predict(cleaned_texts)
-        return self.encoder.inverse_transform(encoded_preds)
+        # 1. Clean raw text input
+        cleaned = [clean_single_text(t) for t in texts]
 
+        # 2. Predict through sklearn pipeline (TF-IDF + LinearSVC)
+        encoded_preds = self.pipeline.predict(cleaned)
 
-def create_classifier(config: dict):
-    """Instantiate classifier based on configuration."""
-    model_type = config.get("models", {}).get("active_model", "linear_svc").lower()
-
-    if model_type == "logistic_regression":
-        lr_params = config.get("models", {}).get("logistic_regression", {})
-        return LogisticRegression(
-            C=lr_params.get("C", 1.0),
-            penalty=lr_params.get("penalty", "l2"),
-            solver=lr_params.get("solver", "lbfgs"),
-            max_iter=lr_params.get("max_iter", 1000),
-            class_weight=lr_params.get("class_weight", "balanced"),
-            random_state=lr_params.get("random_state", 42),
-        )
-    else:
-        svc_params = config.get("models", {}).get("linear_svc", {})
-        return LinearSVC(
-            C=svc_params.get("C", 1.0),
-            loss=svc_params.get("loss", "squared_hinge"),
-            max_iter=svc_params.get("max_iter", 2000),
-            class_weight=svc_params.get("class_weight", "balanced"),
-            random_state=svc_params.get("random_state", 42),
-        )
+        # 3. Inverse transform back to human-readable categories
+        return self.encoder.inverse_transform(encoded_preds).tolist()
 
 
 def train_and_save_pipeline(config: dict = None):
-    """Train full scikit-learn Pipeline and persist artifacts."""
+    """Train unified TF-IDF + Classifier pipeline and save artifacts."""
     if config is None:
         config = load_config()
 
-    print("Loading processed dataset...")
     df = load_processed_data(config)
+    target_col = config["data"]["target_column"]
 
-    target_col = config["data"].get("target_column", "Topic_group")
-    text_col = "cleaned_text" if "cleaned_text" in df.columns else config["data"].get("text_column", "Document")
+    X_train, X_test, y_train, y_test = train_test_split(
+        df["cleaned_text"],
+        df[target_col],
+        test_size=config["data"].get("test_size", 0.2),
+        random_state=config["data"].get("random_state", 42),
+        stratify=df[target_col],
+    )
 
-    X = df[text_col]
-    y = df[target_col]
-
-    # Encode labels
+    # Fit label encoder
     encoder = LabelEncoder()
-    y_encoded = encoder.fit_transform(y)
+    y_train_enc = encoder.fit_transform(y_train)
+    y_test_enc = encoder.transform(y_test)
+    save_encoder(encoder)
 
-    # Train / Test split
-    test_size = config["data"].get("test_size", 0.2)
-    random_state = config["data"].get("random_state", 42)
-    stratify = y_encoded if config["data"].get("stratify", True) else None
-
-    X_train, X_test, y_train_enc, y_test_enc = train_test_split(
-        X, y_encoded, test_size=test_size, random_state=random_state, stratify=stratify
+    # Build vectorizer & classifier
+    vectorizer = build_tfidf_vectorizer(X_train, config)
+    classifier = train_priority_classifier(
+        vectorizer.transform(X_train), y_train_enc, config
     )
 
-    # TF-IDF Vectorizer
-    tfidf_params = config.get("features", {}).get("tfidf", {})
-    vectorizer = TfidfVectorizer(
-        max_features=tfidf_params.get("max_features", 10000),
-        ngram_range=tuple(tfidf_params.get("ngram_range", (1, 2))),
-        min_df=tfidf_params.get("min_df", 2),
-        max_df=tfidf_params.get("max_df", 0.95),
-        sublinear_tf=tfidf_params.get("sublinear_tf", True),
-        norm=tfidf_params.get("norm", "l2"),
-        use_idf=tfidf_params.get("use_idf", True),
-    )
-
-    # Classifier
-    clf = create_classifier(config)
-
-    # Build Pipeline
+    # Combine into unified Pipeline
     pipeline = Pipeline([
         ("tfidf", vectorizer),
-        ("classifier", clf),
+        ("classifier", classifier),
     ])
 
-    print("Training pipeline...")
-    pipeline.fit(X_train, y_train_enc)
-
-    # Save artifacts
-    save_pipeline(pipeline)
-    save_encoder(encoder)
+    # Save pipeline
+    pipe_path = PROJECT_ROOT / config["models"]["artifacts"]["pipeline_save_path"]
+    pipe_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(pipeline, pipe_path)
+    print(f"Pipeline saved to {pipe_path}")
 
     # Evaluate
     preds = pipeline.predict(X_test)
