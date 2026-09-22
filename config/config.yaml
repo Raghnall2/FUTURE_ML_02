@@ -1,0 +1,178 @@
+# ==============================================================================
+# Support Ticket Classification Configuration
+# Dataset: all_tickets_processed_improved_v3.csv (47,837 rows, 8 classes)
+# ==============================================================================
+
+project:
+  name: "support-ticket-classification"
+  version: "0.1.0"
+  description: "NLP-powered multi-class classifier for IT and HR support tickets"
+  seed: 42
+
+# ------------------------------------------------------------------------------
+# Data Paths & Dataset Configuration
+# ------------------------------------------------------------------------------
+data:
+  raw_path: "data/raw/all_tickets_processed_improved_v3.csv"
+  processed_path: "data/processed/tickets_processed.csv"
+
+  # Dataset column mapping
+  text_column: "Document"
+  target_column: "Topic_group"
+  category_column: "Topic_group"      # Alias for target_column
+
+  # Train / Validation / Test split parameters
+  test_size: 0.2
+  val_size: 0.1
+  stratify: true
+  random_state: 42
+
+# ------------------------------------------------------------------------------
+# Preprocessing & Text Normalization
+# ------------------------------------------------------------------------------
+preprocessing:
+  lower_case: true
+  remove_punctuation: true
+  remove_numbers: false
+  replace_numbers_with_token: false
+  number_token: "<NUM>"
+  remove_urls: true
+  remove_emails: true
+  remove_html_tags: true
+  remove_extra_whitespace: true
+  remove_stopwords: true
+  stem_or_lemma: "lemmatize"          # Options: "lemmatize", "stem", "none"
+  min_token_length: 2
+  max_token_length: 50
+
+  # Domain-specific custom stopwords
+  custom_stopwords:
+    - "hello"
+    - "hi"
+    - "dear"
+    - "thanks"
+    - "thank"
+    - "regards"
+    - "please"
+    - "sincerely"
+    - "ticket"
+
+# ------------------------------------------------------------------------------
+# Feature Extraction & Vectorization
+# ------------------------------------------------------------------------------
+features:
+  method: "tfidf"                     # Options: "tfidf", "count", "embeddings"
+
+  tfidf:
+    max_features: 10000
+    ngram_range: [1, 2]
+    min_df: 2
+    max_df: 0.95
+    sublinear_tf: true
+    norm: "l2"
+    use_idf: true
+
+  engineered_features:
+    include_text_length: true
+    include_word_count: true
+    include_uppercase_ratio: false
+
+# ------------------------------------------------------------------------------
+# Models Configuration & Hyperparameters
+# ------------------------------------------------------------------------------
+models:
+  active_model: "linear_svc" # Options: "logistic_regression", "linear_svc", "random_forest"
+
+  category_model:
+    name: "topic_classifier"
+    type: "linear_svc"       # Default classifier
+    params:
+      C: 1.0
+      penalty: "l2"
+      solver: "lbfgs"
+      max_iter: 1000
+      class_weight: "balanced"
+      random_state: 42
+
+  logistic_regression:
+    C: 1.0
+    penalty: "l2"
+    solver: "lbfgs"
+    max_iter: 1000
+    class_weight: "balanced"
+    random_state: 42
+
+  linear_svc:
+    C: 1.0
+    loss: "squared_hinge"
+    max_iter: 2000
+    class_weight: "balanced"
+    random_state: 42
+
+  random_forest:
+    n_estimators: 200
+    max_depth: 30
+    min_samples_split: 5
+    min_samples_leaf: 2
+    class_weight: "balanced"
+    random_state: 42
+    n_jobs: -1
+
+  artifacts:
+    model_save_path: "models/ticket_classifier.pkl"
+    vectorizer_save_path: "models/tfidf_vectorizer.pkl"
+    encoder_save_path: "models/topic_encoder.pkl"
+    pipeline_save_path: "models/ticket_pipeline.pkl"
+# ------------------------------------------------------------------------------
+# Target Taxonomies & Label Definitions (from all_tickets_processed_improved_v3.csv)
+# ------------------------------------------------------------------------------
+labels:
+  num_classes: 8
+  categories:
+    - "Access"
+    - "Administrative rights"
+    - "Hardware"
+    - "HR Support"
+    - "Internal Project"
+    - "Miscellaneous"
+    - "Purchase"
+    - "Storage"
+
+  # Dataset class distribution for reference
+  class_distribution:
+    Hardware: 13617
+    HR Support: 10915
+    Access: 7125
+    Miscellaneous: 7060
+    Storage: 2777
+    Purchase: 2464
+    Internal Project: 2119
+    Administrative rights: 1760
+
+# ------------------------------------------------------------------------------
+# Evaluation & Reporting
+# ------------------------------------------------------------------------------
+evaluation:
+  metrics:
+    - "accuracy"
+    - "precision_macro"
+    - "precision_weighted"
+    - "recall_macro"
+    - "recall_weighted"
+    - "f1_macro"
+    - "f1_weighted"
+  confusion_matrix_normalize: "true"
+  save_plots: true
+  figures_dir: "reports/figures/"
+  metrics_path: "reports/metrics.json"
+  classification_report_path: "reports/classification_report.csv"
+  classification_plt: "reports/classification_report.png"
+
+# ------------------------------------------------------------------------------
+# Logging & Execution
+# ------------------------------------------------------------------------------
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  log_to_file: false
+  log_file_path: "reports/pipeline.log"
